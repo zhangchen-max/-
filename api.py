@@ -37,8 +37,9 @@ from src.psy_nav.models import LLMClient
 from src.psy_nav.schema import SessionState
 
 # ── 全局状态 ─────────────────────────────────────────────────────────────────
-_sessions: dict[str, SessionState] = {}   # session_id → state
-_user_session: dict[str, str] = {}        # student_id → session_id  (普通对话)
+_sessions: dict[str, SessionState] = {}       # session_id → state
+_user_session: dict[str, str] = {}            # student_id → session_id  (普通对话)
+_bench_awaiting_diag: set[str] = set()        # student_id：已发 FINAL，等诊断请求
 _llm: LLMClient | None = None
 
 
@@ -91,26 +92,31 @@ GAD, Panic_Disorder, Social_Anxiety, PTSD,
 BPD, IED, PGD,
 SSD, ADJ, ADHD, ASD, OTHER
 
-【各诊断关键特征（辅助判断）】
-- OCD：反复闯入性思维 + 强迫行为，自我不和谐，耗时>1h/天
-- BDD：对外貌缺陷先占观念（实际不存在或轻微），反复检查/回避
-- OCPD：完美主义/控制欲/固执，自我和谐，影响人际，非先占思维
-- OS_OCRD：其他强迫相关障碍（囤积障碍/拔毛癖/抠皮症等）
-- BPD：情感不稳定、身份认同混乱、慢性空虚感、冲动、自伤、恐惧被遗弃、不稳定关系
-- IED：反复爆发性攻击，与诱因不成比例，事后懊悔
-- PGD：失去重要他人后持续>12个月强烈哀伤，功能严重受损
-- PMDD：月经前1-2周严重情绪症状（易怒/抑郁/焦虑），月经后缓解
-- SSD：持续躯体症状伴过度担忧/就医行为，无法以躯体疾病完全解释
-- ADJ：可识别应激源后3个月内出现症状，不符合其他具体诊断标准
+【各诊断关键特征与鉴别要点】
+- OCD：反复闯入性思维 + 强迫行为，自我不和谐，耗时>1h/天，与 OCPD 区别：OCPD 是人格模式非先占思维
+- BDD：对外貌缺陷先占观念（客观不存在或轻微），反复镜子检查/回避/寻求安慰
+- OCPD：完美主义/控制欲/固执/过度工作，自我和谐，影响人际，无强迫思维
+- OS_OCRD：囤积障碍、拔毛癖、抠皮症、疾病焦虑障碍
+- BPD：情感高度不稳定、身份认同混乱、慢性空虚感、冲动自伤、极度恐惧被遗弃、理想化/贬低交替
+- IED：反复爆发性语言或肢体攻击，与诱因完全不成比例，两次发作间无攻击性，事后懊悔
+- PGD（延长哀伤）：失去重要他人后 >12个月，持续强烈思念/悲痛，身份认同感丧失，无法接受死亡现实，功能显著受损；与 MDD 区别：核心是哀伤而非普遍性快感缺乏
+- PMDD：严格月经周期相关——黄体期（排卵后至月经前1周）出现严重情绪症状，月经来潮后症状消失；与 MDD 区别：有明确周期性
+- SSD（躯体症状障碍）：一个或多个持续躯体症状 + 过度健康焦虑/就医行为/症状相关思维耗时 >1h/天；无法以躯体疾病完全解释；与 GAD 区别：焦虑核心是躯体而非泛化担忧
+- ADJ（适应障碍）：有明确可识别应激源 + 3个月内出现情绪/行为症状 + 症状严重程度超过正常应激反应 + 不符合其他具体诊断（OCD/MDD/BPD等）；当有应激源但症状不够重也不够特异时优先考虑
+
+【三类易漏诊的特别提示】
+- 如果有明确应激事件（失业/分手/失去亲人/搬迁等）且症状时间线与之吻合，且不满足其他具体障碍标准 → ADJ
+- 如果有丧亲/失去重要关系且哀伤持续超过一年 → PGD（不要默认用 MDD）
+- 如果以躯体不适为核心主诉、反复就医但检查无异常、对症状有过度担忧 → SSD（不要默认用 GAD）
 
 【输出规则】
-- diagnosis_topk 必须包含 3-5 个候选，概率总和不超过 1.5（允许重叠）
-- 第2-5名要有合理概率（>=0.05），不能全部堆在第1名
-- justification.support_slots 只能包含 asked_slots 里有的 slot
+- diagnosis_topk 必须包含 3-5 个候选，所有 confidence 之和不超过 1.5
+- 第2-5名要有合理概率（>=0.05），体现鉴别思路
+- justification.support_slots 只能包含 asked_slots 里已有的 slot，不得凭空填写
 - 输出一个合法 JSON 对象，可直接 json.loads() 解析
 
-【输出格式】
-{"diagnosis_topk":[{"label":"OCD","confidence":0.65},{"label":"BDD","confidence":0.20},{"label":"OCPD","confidence":0.10}],"risk_flags":{"suicide":false,"violence":false,"psychosis":false,"substance":false},"justification":[{"claim":"反复强迫思维和仪式化行为","support_slots":["intrusive_thoughts","compulsive_behavior"]}],"next_steps":[{"type":"suggest_assessment","text":"建议Y-BOCS量表评估。"}],"calibration":{"uncertainty_statement":"当前结论基于有限访谈信息，需进一步评估。"}}
+【输出格式示例】
+{"diagnosis_topk":[{"label":"OCD","confidence":0.65},{"label":"BDD","confidence":0.20},{"label":"OCPD","confidence":0.10}],"risk_flags":{"suicide":false,"violence":false,"psychosis":false,"substance":false},"justification":[{"claim":"反复强迫思维和仪式化行为耗时超过1小时","support_slots":["intrusive_thoughts","compulsive_behavior"]}],"next_steps":[{"type":"suggest_assessment","text":"建议Y-BOCS量表评估。"}],"calibration":{"uncertainty_statement":"当前结论基于有限访谈信息，需进一步评估。"}}
 """.strip()
 
 
@@ -224,12 +230,25 @@ async def oai_chat(req: _OAIChatRequest):
     last_user = _last_user_msg(req.messages)
 
     # ── 路由判断 ──────────────────────────────────────────────────────────────
-    if _is_benchmark_ask_prompt(last_user):
-        content = await _benchmark_ask(last_user)
-
-    elif _is_benchmark_diagnosis_prompt(last_user):
-        content = await _benchmark_diagnosis(last_user, student_id)
-
+    if _is_benchmark_session(req.messages):
+        # benchmark 模式：system 含"只能输出JSON"
+        if student_id in _bench_awaiting_diag:
+            # 上一轮输出了 FINAL，本轮是诊断请求
+            _bench_awaiting_diag.discard(student_id)
+            content = await _benchmark_diagnosis(last_user, student_id)
+        elif _is_benchmark_ask_prompt(last_user):
+            result_str = await _benchmark_ask(last_user)
+            # 如果模型决定 FINAL，记录状态等下一轮诊断
+            try:
+                parsed = json.loads(result_str)
+                if parsed.get("action") == "FINAL":
+                    _bench_awaiting_diag.add(student_id)
+            except (json.JSONDecodeError, AttributeError):
+                pass
+            content = result_str
+        else:
+            # 兜底：直接走诊断
+            content = await _benchmark_diagnosis(last_user, student_id)
     else:
         # 普通 psy-nav 会话
         content = await _normal_turn(req, student_id)
@@ -239,13 +258,15 @@ async def oai_chat(req: _OAIChatRequest):
 
 # ── Benchmark 处理 ────────────────────────────────────────────────────────────
 
+def _is_benchmark_session(messages: list) -> bool:
+    """Benchmark 的 system prompt 含 '只能输出JSON'，以此作为主判断信号。"""
+    for m in messages:
+        if m.role == "system" and ("只能输出JSON" in m.content or "只输出JSON" in m.content):
+            return True
+    return False
+
 def _is_benchmark_ask_prompt(text: str) -> bool:
     return "allowed_slots" in text and "must_ask_slots" in text
-
-def _is_benchmark_diagnosis_prompt(text: str) -> bool:
-    return "diagnosis_topk" in text or (
-        "FINAL" in text and ("诊断" in text or "diagnosis" in text.lower())
-    )
 
 def _extract_json(raw) -> str:
     """
