@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from src.psy_nav.agents import process_turn, run_report
@@ -212,6 +213,13 @@ async def get_state(session_id: str):
     if not state:
         raise HTTPException(status_code=404, detail="session not found")
     return _state_summary(state)
+
+
+# ── OpenAI 兼容路由 ───────────────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def web_ui():
+    return HTMLResponse(content=_WEB_UI_HTML)
 
 
 # ── OpenAI 兼容路由 ───────────────────────────────────────────────────────────
@@ -444,3 +452,283 @@ def _state_summary(state: SessionState) -> dict:
             for h in state.differential
         ],
     }
+
+
+# ── Web UI ────────────────────────────────────────────────────────────────────
+
+_WEB_UI_HTML = """<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PsyNav — 心理健康初诊采集</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #f5f5f7; color: #1d1d1f; height: 100vh; display: flex; }
+
+  /* 左侧对话区 */
+  #chat-panel {
+    flex: 1; display: flex; flex-direction: column; max-width: 700px;
+    margin: 0 auto; padding: 20px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin-bottom: 16px; color: #333; }
+
+  #messages {
+    flex: 1; overflow-y: auto; display: flex; flex-direction: column;
+    gap: 12px; padding: 16px; background: #fff; border-radius: 12px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  }
+  .msg { max-width: 80%; padding: 10px 14px; border-radius: 16px;
+         line-height: 1.6; font-size: 15px; white-space: pre-wrap; }
+  .msg.system { align-self: center; background: #e9e9eb; color: #555;
+                font-size: 13px; border-radius: 8px; }
+  .msg.assistant { align-self: flex-start; background: #e9f0ff; color: #1a1a2e; }
+  .msg.user     { align-self: flex-end;   background: #007aff; color: #fff; }
+
+  #input-row {
+    display: flex; gap: 10px; margin-top: 14px;
+  }
+  #user-input {
+    flex: 1; padding: 12px 16px; border: 1.5px solid #d1d1d6;
+    border-radius: 24px; font-size: 15px; outline: none;
+    transition: border-color 0.2s;
+  }
+  #user-input:focus { border-color: #007aff; }
+  button {
+    padding: 12px 20px; border: none; border-radius: 24px;
+    font-size: 14px; cursor: pointer; font-weight: 500;
+    transition: opacity 0.15s;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #send-btn { background: #007aff; color: #fff; }
+  #end-btn  { background: #ff3b30; color: #fff; }
+
+  /* 右侧状态面板 */
+  #state-panel {
+    width: 280px; padding: 20px; display: flex; flex-direction: column; gap: 14px;
+    overflow-y: auto;
+  }
+  .card {
+    background: #fff; border-radius: 10px; padding: 14px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+  }
+  .card h3 { font-size: 12px; font-weight: 600; color: #8e8e93;
+             text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
+  .badge {
+    display: inline-block; padding: 3px 10px; border-radius: 12px;
+    font-size: 13px; font-weight: 500;
+  }
+  .badge.low      { background: #d1fae5; color: #065f46; }
+  .badge.medium   { background: #fef3c7; color: #92400e; }
+  .badge.high,
+  .badge.critical { background: #fee2e2; color: #991b1b; }
+  .badge.default  { background: #e5e7eb; color: #374151; }
+
+  .hypothesis-row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .hypothesis-name { font-size: 14px; }
+  .prob-bar-wrap { width: 80px; height: 6px; background: #e5e7eb; border-radius: 3px; }
+  .prob-bar { height: 100%; border-radius: 3px; background: #007aff; }
+  .prob-val { font-size: 12px; color: #6b7280; min-width: 34px; text-align: right; }
+
+  #report-area { display: none; }
+  #report-area pre {
+    background: #1e1e2e; color: #cdd6f4; padding: 14px;
+    border-radius: 8px; font-size: 12px; overflow-x: auto;
+    white-space: pre-wrap; word-break: break-all;
+    max-height: 60vh; overflow-y: auto;
+  }
+
+  /* 学号输入覆层 */
+  #login-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.3);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+  }
+  #login-box {
+    background: #fff; padding: 32px; border-radius: 16px;
+    width: 320px; box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+  }
+  #login-box h2 { font-size: 20px; margin-bottom: 20px; }
+  #student-id-input {
+    width: 100%; padding: 12px; border: 1.5px solid #d1d1d6;
+    border-radius: 10px; font-size: 15px; margin-bottom: 14px; outline: none;
+  }
+  #start-btn { width: 100%; background: #007aff; color: #fff; padding: 13px; font-size: 15px; }
+  #login-error { color: #ff3b30; font-size: 13px; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<div id="login-overlay">
+  <div id="login-box">
+    <h2>心理健康初诊采集</h2>
+    <input id="student-id-input" type="text" placeholder="请输入学号（6-15位数字）" maxlength="15">
+    <button id="start-btn" onclick="startSession()">开始</button>
+    <div id="login-error"></div>
+  </div>
+</div>
+
+<div id="chat-panel">
+  <h1>PsyNav · 初诊信息采集</h1>
+  <div id="messages"></div>
+  <div id="input-row">
+    <input id="user-input" type="text" placeholder="输入你想说的..." disabled
+           onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendMsg();}">
+    <button id="send-btn" onclick="sendMsg()" disabled>发送</button>
+    <button id="end-btn" onclick="endSession()" disabled>结束</button>
+  </div>
+</div>
+
+<div id="state-panel">
+  <div class="card">
+    <h3>当前状态</h3>
+    <div style="font-size:13px; line-height:2;">
+      <div>谱系：<span id="st-category" class="badge default">—</span></div>
+      <div>轮次：<span id="st-turns">—</span></div>
+      <div>风险：<span id="st-risk" class="badge low">low</span></div>
+      <div>联盟：<span id="st-alliance">—</span></div>
+      <div>探查：<span id="st-probe" style="color:#007aff;font-size:13px;">—</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>鉴别诊断</h3>
+    <div id="st-differential">—</div>
+  </div>
+
+  <div class="card" id="report-area">
+    <h3>医生报告</h3>
+    <pre id="report-content"></pre>
+  </div>
+</div>
+
+<script>
+let sessionId = null;
+let ended = false;
+
+async function startSession() {
+  const sid = document.getElementById('student-id-input').value.trim();
+  if (!/^\\d{6,15}$/.test(sid)) {
+    document.getElementById('login-error').textContent = '请输入6-15位数字学号';
+    return;
+  }
+  const res = await fetch('/sessions', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({student_id: sid})
+  });
+  const data = await res.json();
+  sessionId = data.session_id;
+  document.getElementById('login-overlay').style.display = 'none';
+  document.getElementById('user-input').disabled = false;
+  document.getElementById('send-btn').disabled = false;
+  document.getElementById('end-btn').disabled = false;
+  addMsg('assistant', data.opening_message);
+  document.getElementById('user-input').focus();
+}
+
+async function sendMsg() {
+  if (!sessionId || ended) return;
+  const input = document.getElementById('user-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  addMsg('user', text);
+  setLoading(true);
+
+  const res = await fetch('/sessions/' + sessionId + '/turns', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({content: text})
+  });
+  const data = await res.json();
+  setLoading(false);
+  addMsg('assistant', data.response);
+  updateState(data.state);
+
+  if (data.ended) {
+    ended = true;
+    addMsg('system', '会话已结束，正在生成报告...');
+    await fetchReport();
+  }
+}
+
+async function endSession() {
+  if (!sessionId || ended) return;
+  ended = true;
+  setLoading(true);
+  addMsg('system', '正在生成报告...');
+  await fetchReport();
+}
+
+async function fetchReport() {
+  setLoading(true);
+  const res = await fetch('/sessions/' + sessionId + '/end', {method:'POST'});
+  const data = await res.json();
+  setLoading(false);
+  document.getElementById('user-input').disabled = true;
+  document.getElementById('send-btn').disabled = true;
+  document.getElementById('end-btn').disabled = true;
+  showReport(data.report);
+  if (data.state) updateState(data.state);
+}
+
+function addMsg(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.textContent = text;
+  const box = document.getElementById('messages');
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+function setLoading(on) {
+  document.getElementById('send-btn').disabled = on;
+  document.getElementById('user-input').disabled = on;
+}
+
+function updateState(s) {
+  if (!s) return;
+  document.getElementById('st-turns').textContent = s.turn_count || '—';
+  document.getElementById('st-probe').textContent = s.probe_target || '—';
+
+  const cat = document.getElementById('st-category');
+  cat.textContent = s.broad_category || '—';
+  cat.className = 'badge default';
+
+  const riskEl = document.getElementById('st-risk');
+  riskEl.textContent = s.risk_level || 'low';
+  riskEl.className = 'badge ' + (s.risk_level || 'low');
+
+  const al = s.alliance_score !== undefined ? (s.alliance_score * 100).toFixed(0) + '%' : '—';
+  document.getElementById('st-alliance').textContent = al;
+
+  const diffEl = document.getElementById('st-differential');
+  if (s.differential && s.differential.length) {
+    diffEl.innerHTML = s.differential.map(h => `
+      <div class="hypothesis-row">
+        <span class="hypothesis-name">${h.disorder_cn}</span>
+        <div class="prob-bar-wrap"><div class="prob-bar" style="width:${(h.probability*100).toFixed(0)}%"></div></div>
+        <span class="prob-val">${(h.probability*100).toFixed(0)}%</span>
+      </div>
+    `).join('');
+  } else {
+    diffEl.textContent = '等待分诊...';
+  }
+}
+
+function showReport(report) {
+  const area = document.getElementById('report-area');
+  area.style.display = 'block';
+  document.getElementById('report-content').textContent = JSON.stringify(report, null, 2);
+}
+
+document.getElementById('student-id-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') startSession();
+});
+</script>
+</body>
+</html>"""
