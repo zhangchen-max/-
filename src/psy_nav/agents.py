@@ -308,6 +308,48 @@ def _apply_reasoner(state: SessionState, result: dict) -> None:
     if th:
         state.treatment_history.update(th)
 
+    # 动态更新 broad_category：当最高概率假设超过阈值时跟随更新
+    _DISORDER_TO_CATEGORY = {
+        "schizophrenia": "psychotic_spectrum",
+        "schizoaffective_disorder": "psychotic_spectrum",
+        "brief_psychotic_disorder": "psychotic_spectrum",
+        "delusional_disorder": "psychotic_spectrum",
+        "bipolar_with_psychosis": "psychotic_spectrum",
+        "unspecified_psychotic_disorder": "psychotic_spectrum",
+        "psychotic_disorder": "psychotic_spectrum",
+        "bipolar_disorder": "mood_spectrum",
+        "major_depressive_disorder": "mood_spectrum",
+        "persistent_depressive_disorder": "mood_spectrum",
+        "generalized_anxiety_disorder": "anxiety_spectrum",
+        "panic_disorder": "anxiety_spectrum",
+        "ocd": "anxiety_spectrum",
+        "ptsd": "anxiety_spectrum",
+        "social_anxiety_disorder": "anxiety_spectrum",
+        "adhd": "neurodevelopmental",
+        "asd": "neurodevelopmental",
+    }
+    # 中文名称关键字兜底映射
+    _CN_KEYWORDS_TO_CATEGORY = {
+        "精神分裂": "psychotic_spectrum",
+        "精神病": "psychotic_spectrum",
+        "妄想": "psychotic_spectrum",
+        "双相": "mood_spectrum",
+        "抑郁": "mood_spectrum",
+        "焦虑": "anxiety_spectrum",
+        "强迫": "anxiety_spectrum",
+    }
+    if state.differential:
+        top = max(state.differential, key=lambda h: h.probability)
+        if top.probability >= 0.65:
+            inferred = _DISORDER_TO_CATEGORY.get(top.disorder)
+            if not inferred:
+                for kw, cat in _CN_KEYWORDS_TO_CATEGORY.items():
+                    if kw in top.disorder_cn:
+                        inferred = cat
+                        break
+            if inferred and inferred != state.broad_category:
+                state.broad_category = inferred
+
 
 def _apply_risk(state: SessionState, result: dict) -> None:
     state.risk_level = result.get("risk_level", "low")

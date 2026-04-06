@@ -18,6 +18,16 @@ TRIAGE_SYSTEM = """
 - organic：有器质性线索（脑外伤/物质使用/躯体疾病诱发）
 - unknown：信息不足
 
+【关键识别规则：躯体化描述 vs 精神病性症状】
+以下描述看起来像躯体症状，实际是精神病性症状的强烈信号，必须归入 psychotic_spectrum：
+- 用异乎寻常的语言描述大脑/神经的感觉（"脑组织扭挤在一起"、"神经麻痹僵直"、"脑袋被玻璃罩住"）
+- 感知到身体被外力操控、信号穿透身体或"擦肩而过"
+- 描述大脑"独立思考"或"支配自己"、自我感/现实感解体
+- 非常规的知觉体验（透明感、风能穿过脑袋、外界信号无法接收）
+- 这类描述是被动体验/感知扭曲/思维障碍的变体，不是焦虑或躯体化障碍
+
+anxiety_spectrum 仅适用于：明确的担忧/紧张/恐慌/强迫思维/回避行为，且无上述精神病性知觉异常。
+
 【鉴别诊断生成规则】
 - 列出2-4个候选诊断，按可能性排序
 - 每个候选诊断注明：已有哪些支持证据、还需要确认哪些关键点
@@ -61,16 +71,41 @@ REASONER_SYSTEM = """
 
 【探查目标选择原则（按优先级）】
 1. 能同时区分多个假设的关键分叉点（如：情感症状和精神病症状谁先出现？）
-2. 当前最高概率假设的最重要未知项
+2. 当前最高概率假设的最重要未知项（见下方精神病谱系专项探查表）
 3. 病程和功能损害（若尚未确认）
 4. 治疗史（若 turn >= 5 且尚未了解）
 5. 家族史（若 turn >= 8 且尚未了解）
 
+【禁止重复探查】
+- 输入 context 中包含 probed_topics 列表（已探查过的方向）
+- probe_target 不得与最近2轮已出现的探查目标相同
+- 若某话题已充分了解（facts 中已有），换新方向
+
+【精神病谱系专项探查目标表】（broad_category == psychotic_spectrum 时优先从此表选）
+| probe_target | 临床意义 |
+|---|---|
+| hallucination_modality | 幻觉感官类型（听/视/触/味）→ 区分精分 vs 器质性 |
+| hallucination_content | 幻听具体内容（命令性/评论性/对话性）→ 一级症状确认 |
+| hallucination_frequency | 幻觉出现频率、持续时长 → 严重程度 |
+| hallucination_onset | 幻觉最早出现时间 → 病程起点 |
+| passivity_experience | 被控制感/思维插入/思维被广播 → 精分一级症状 |
+| passivity_onset | 被动体验何时开始，情境是什么 → 病程确认 |
+| delusion_content | 妄想的具体内容和主题 → 区分类型 |
+| delusion_conviction | 对妄想的确信程度（是否质疑过） → 自知力 |
+| delusion_behavior_impact | 妄想是否驱动行为（如躲避/攻击/顺从命令） |
+| disorganized_speech_examples | 联想松弛、思维跳跃的具体例子 |
+| negative_symptoms | 情感平淡/意志缺乏/言语贫乏 |
+| premorbid_functioning | 发病前的社交/学业/工作状态 |
+| mood_episode_timeline | 情感症状与精神病症状哪个先出现 → 区分精分 vs 双相 |
+
 【事实 key 命名规范】使用英文蛇形命名，如：
 onset_timing, duration, hallucination_type, hallucination_frequency,
-mood_episode_history, manic_episode_history, substance_use,
-functional_impairment, family_history, medication_history,
-suicidal_ideation, insight_level, trigger_event
+hallucination_content, hallucination_modality, hallucination_onset,
+passivity_experience, passivity_onset, delusion_content, delusion_conviction,
+delusion_behavior_impact, mood_episode_history, manic_episode_history,
+substance_use, functional_impairment, family_history, medication_history,
+suicidal_ideation, insight_level, trigger_event, negative_symptoms,
+premorbid_functioning, mood_episode_timeline
 
 【输出格式】严格 JSON：
 {
