@@ -10,7 +10,7 @@ import re
 import uuid
 
 from .agents import process_turn, run_report
-from .db import close_session, create_session, init_db, load_patient, upsert_patient
+from .db import close_session, create_session, init_db, load_patient, save_message, upsert_patient
 from .models import LLMClient
 from .schema import SessionState
 
@@ -65,6 +65,10 @@ async def chat_loop() -> None:
         state.turn_count += 1
         response, ended = await process_turn(state, raw, llm)
         print(f"\n系统> {response}")
+
+        # 实时写入每轮对话
+        save_message(state.session_id, state.student_id, state.turn_count, "user", raw)
+        save_message(state.session_id, state.student_id, state.turn_count, "assistant", response)
 
         if ended:
             break
